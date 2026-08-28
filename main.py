@@ -3,7 +3,6 @@ import sys
 import hashlib
 import zipfile
 import datetime
-from datetime import datetime as dt
 from pathlib import Path
 import time
 from collections import defaultdict
@@ -11,10 +10,11 @@ from collections import defaultdict
 # Импорт баз данных
 from hashes import MINECRAFT_HASHES
 from cheat_names import is_cheat_filename, get_detected_cheat
+from cheat_packages import scan_jar_for_cheats, check_special_hash
 
 # Информация о программе
 APP_NAME = "Minecraft Version Checker"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.0.3"
 APP_AUTHOR = "holyworld"
 
 
@@ -30,15 +30,15 @@ def get_base_path():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def print_colored(text, color_code="\\033[0m"):
+def print_colored(text, color_code="\033[0m"):
     """Цветной вывод в консоль"""
     colors = {
-        "red": "\\033[91m",
-        "green": "\\033[92m",
-        "yellow": "\\033[93m",
-        "cyan": "\\033[96m",
-        "gray": "\\033[90m",
-        "reset": "\\033[0m"
+        "red": "\033[91m",
+        "green": "\033[92m",
+        "yellow": "\033[93m",
+        "cyan": "\033[96m",
+        "gray": "\033[90m",
+        "reset": "\033[0m"
     }
     print(f"{colors.get(color_code, '')}{text}{colors['reset']}")
 
@@ -47,7 +47,6 @@ def main_menu():
     """Главное меню для выбора программы"""
     print(" ╔══════════════════════════════════════════════════╗")
     print(" ║             Minecraft Version Checker            ║")
-    print(f" ║                                                  ║")
     print(" ╠══════════════════════════════════════════════════╣")
     print(" ║ 1. Проверка обычных версий                       ║")
     print(" ║ 2. Проверка LabyMod версий                       ║")
@@ -76,6 +75,7 @@ class MinecraftHashChecker:
         ]
 
         found_paths = []
+
         for path in possible_paths:
             if os.path.exists(path):
                 found_paths.append(path)
@@ -86,11 +86,14 @@ class MinecraftHashChecker:
     def calculate_file_hash(self, filepath):
         """Вычисление SHA256 хеша файла"""
         hash_func = hashlib.sha256()
+
         try:
             with open(filepath, 'rb') as f:
                 for chunk in iter(lambda: f.read(4096), b''):
                     hash_func.update(chunk)
+
             return hash_func.hexdigest().upper()
+
         except Exception as e:
             print(f"    ⚠️ Ошибка чтения файла {filepath}: {e}")
             return None
@@ -108,6 +111,7 @@ class MinecraftHashChecker:
         ]
 
         versions_path = None
+
         for possible_path in possible_version_paths:
             if os.path.exists(possible_path):
                 versions_path = possible_path
@@ -126,19 +130,24 @@ class MinecraftHashChecker:
                 for file in files:
                     if file.endswith('.jar'):
                         jar_files.append(os.path.join(root, file))
+
             return jar_files
 
         # Ищем JAR в папках версий
         if os.path.exists(versions_path):
             try:
-                version_folders = [d for d in os.listdir(versions_path)
-                                   if os.path.isdir(os.path.join(versions_path, d))]
+                version_folders = [
+                    d for d in os.listdir(versions_path)
+                    if os.path.isdir(os.path.join(versions_path, d))
+                ]
 
                 for folder in version_folders:
                     folder_path = os.path.join(versions_path, folder)
+
                     for file in os.listdir(folder_path):
                         if file.endswith('.jar'):
                             jar_files.append(os.path.join(folder_path, file))
+
             except Exception as e:
                 print(f"  ⚠️ Ошибка чтения папки версий: {e}")
 
@@ -155,10 +164,12 @@ class MinecraftHashChecker:
         # Если не нашли — запрашиваем путь
         if not found_paths:
             print("❌ Minecraft не найден в стандартных местах.")
+
             manual_path = input("Укажите путь к папке Minecraft: ").strip()
 
             if manual_path and os.path.exists(manual_path):
                 found_paths.append(manual_path)
+
             else:
                 print("❌ Указанный путь не существует.")
                 input("Нажмите Enter для возврата...")
@@ -166,25 +177,32 @@ class MinecraftHashChecker:
 
         # Меню выбора установки
         print("\n📁 НАЙДЕННЫЕ УСТАНОВКИ:")
+
         for i, path in enumerate(found_paths, 1):
             print(f"  [{i}] {path}")
+
         print("  [A] Проверить все")
         print()
 
         choice = input("Выберите номер установки (или A для всех): ").strip().upper()
 
         selected_paths = []
+
         if choice == "A":
             selected_paths = found_paths
+
         else:
             try:
                 index = int(choice) - 1
+
                 if 0 <= index < len(found_paths):
                     selected_paths.append(found_paths[index])
+
                 else:
                     print("❌ Неверный выбор.")
                     input("Нажмите Enter для возврата...")
                     return
+
             except ValueError:
                 print("❌ Неверный выбор.")
                 input("Нажмите Enter для возврата...")
@@ -227,15 +245,49 @@ class MinecraftHashChecker:
                         if actual_hash == expected_hash:
                             print(f"    ✅ {jar_name}")
                             total_matches += 1
+
                         else:
                             print(f"    ❌ {jar_name} (хеш не совпадает)")
                             total_mismatches += 1
+
                 else:
-                    # Неизвестная версия
+                    # Неизвестная версия — глубокий скан
                     actual_hash = self.calculate_file_hash(jar_path)
+
                     if actual_hash:
-                        print(f"    ⚠️ НЕИЗВЕСТНО: {jar_name}")
-                        total_unknown += 1
+                        deep_scan = scan_jar_for_cheats(jar_path)
+
+                        # Проверка специальных хешей внутри JAR
+                        special_messages = []
+
+                        try:
+                            with zipfile.ZipFile(jar_path, 'r') as zf:
+                                for info in zf.infolist():
+                                    if info.filename.endswith('.class'):
+                                        data = zf.read(info.filename)
+                                        h = hashlib.sha256(data).hexdigest().upper()
+                                        msg = check_special_hash(h)
+
+                                        if msg:
+                                            special_messages.append(msg)
+
+                        except Exception:
+                            pass
+
+                        if deep_scan or special_messages:
+                            print(f"    ❌ ЧИТ: {jar_name}")
+
+                            for item in deep_scan:
+                                print(f"       📦 {item}")
+
+                            for msg in set(special_messages):
+                                print(f"       🔍 {msg}")
+
+                            total_cheats += 1
+
+                        else:
+                            print(f"    ⚠️ НЕИЗВЕСТНО: {jar_name}")
+                            total_unknown += 1
 
         # Итоговый отчет
         print("\n" + "=" * 60)
@@ -246,15 +298,21 @@ class MinecraftHashChecker:
         print(f"✅ Чистых: {total_matches}")
         print(f"❌ Не совпадает хеш: {total_mismatches}")
         print(f"⚠️ Неизвестных версий: {total_unknown}")
+
         if total_cheats > 0:
             print(f"🚫 ОБНАРУЖЕНО ЧИТОВ: {total_cheats}")
+
         print("=" * 60)
 
         input("\nНажмите Enter для возврата в главное меню...")
 
 
 def check_jar_file(jar_path):
-    """Проверяет JAR файл LabyMod на подозрительные классы по времени компиляции"""
+    """
+    Проверяет JAR файл LabyMod только по времени
+    компиляции/модификации .class файлов.
+    """
+
     try:
         with zipfile.ZipFile(jar_path, 'r') as jar:
             class_files = []
@@ -267,22 +325,36 @@ def check_jar_file(jar_path):
             if not class_files:
                 return "❌ Нет классов для проверки"
 
-            # Группируем по времени (до минуты)
+            # Группируем классы по времени до минуты
             time_groups = defaultdict(list)
+
             for filename, file_time in class_files:
-                time_key = file_time.replace(second=0, microsecond=0)
+                time_key = file_time.replace(
+                    second=0,
+                    microsecond=0
+                )
+
                 time_groups[time_key].append(filename)
 
             if not time_groups:
                 return "❌ Не удалось проанализировать время"
 
-            # Находим основную группу (большинство классов)
-            main_group_time = max(time_groups.items(), key=lambda x: len(x[1]))[0]
+            # Находим основную группу —
+            # время, в которое собрано большинство классов
+            main_group_time = max(
+                time_groups.items(),
+                key=lambda x: len(x[1])
+            )[0]
 
-            # Ищем отклоняющиеся классы (разница > 1 минута)
+            # Ищем классы, которые отличаются
+            # от основной группы более чем на 1 минуту
             suspicious = []
+
             for filename, file_time in class_files:
-                time_diff = abs((file_time - main_group_time).total_seconds())
+                time_diff = abs(
+                    (file_time - main_group_time).total_seconds()
+                )
+
                 if time_diff > 60:
                     suspicious.append(filename)
 
@@ -291,13 +363,22 @@ def check_jar_file(jar_path):
 
             if suspicious_count == 0:
                 return "✅ Чисто"
-            else:
-                result = f"⚠️ Подозрительно: {suspicious_count} из {total} классов\n"
-                for i, class_name in enumerate(suspicious[:10], 1):
-                    result += f"   {i}. {class_name}\n"
-                if len(suspicious) > 10:
-                    result += f"   ... и еще {len(suspicious) - 10}\n"
-                return result.strip()
+
+            result = (
+                f"⚠️ Подозрительно: "
+                f"{suspicious_count} из {total} классов\n"
+            )
+
+            for i, class_name in enumerate(suspicious[:10], 1):
+                result += f"   {i}. {class_name}\n"
+
+            if len(suspicious) > 10:
+                result += (
+                    f"   ... и еще "
+                    f"{len(suspicious) - 10}\n"
+                )
+
+            return result.strip()
 
     except Exception as e:
         return f"❌ Ошибка при проверке: {e}"
@@ -305,14 +386,32 @@ def check_jar_file(jar_path):
 
 def find_labymod_jars():
     """Ищет JAR файлы LabyMod"""
+
     appdata = os.getenv('APPDATA')
+
     if not appdata:
         return []
 
     versions_paths = [
-        os.path.join(appdata, '.tlauncher', 'legacy', 'Minecraft', 'game', 'versions'),
-        os.path.join(appdata, '.tlauncher', 'minecraft', 'versions'),
-        os.path.join(appdata, '.minecraft', 'versions'),
+        os.path.join(
+            appdata,
+            '.tlauncher',
+            'legacy',
+            'Minecraft',
+            'game',
+            'versions'
+        ),
+        os.path.join(
+            appdata,
+            '.tlauncher',
+            'minecraft',
+            'versions'
+        ),
+        os.path.join(
+            appdata,
+            '.minecraft',
+            'versions'
+        ),
     ]
 
     found_jars = []
@@ -323,21 +422,33 @@ def find_labymod_jars():
 
         try:
             for item in os.listdir(versions_dir):
-                item_path = os.path.join(versions_dir, item)
+                item_path = os.path.join(
+                    versions_dir,
+                    item
+                )
 
                 if os.path.isdir(item_path):
                     for file in os.listdir(item_path):
-                        if file.lower().endswith('.jar') and 'labymod' in file.lower():
-                            jar_path = os.path.join(item_path, file)
+                        if (
+                            file.lower().endswith('.jar')
+                            and 'labymod' in file.lower()
+                        ):
+                            jar_path = os.path.join(
+                                item_path,
+                                file
+                            )
+
                             found_jars.append(jar_path)
-        except:
+
+        except Exception:
             continue
 
     return found_jars
 
 
 def run_labymod_checker():
-    """Проверка LabyMod клиентов (только полный режим)"""
+    """Проверка LabyMod клиентов только по датам компиляции"""
+
     print("🔍 Проверка LabyMod клиентов")
     print("=" * 50)
 
@@ -345,9 +456,15 @@ def run_labymod_checker():
 
     if not jars:
         print("❌ LabyMod не найден автоматически")
-        custom_path = input("Введите путь к JAR файлу (или Enter для выхода): ").strip()
+
+        custom_path = input(
+            "Введите путь к JAR файлу "
+            "(или Enter для выхода): "
+        ).strip()
+
         if custom_path and os.path.exists(custom_path):
             jars = [custom_path]
+
         else:
             return
 
@@ -358,49 +475,85 @@ def run_labymod_checker():
 
     for jar_path in jars:
         jar_name = os.path.basename(jar_path)
-        folder_name = os.path.basename(os.path.dirname(jar_path))
+        folder_name = os.path.basename(
+            os.path.dirname(jar_path)
+        )
 
         print(f"📁 {folder_name}/{jar_name}")
-        result = check_jar_file(jar_path)
 
-        if "Подозрительно" in result or "⚠️" in result:
+        # Единственная проверка LabyMod —
+        # даты классов внутри JAR
+        result_dates = check_jar_file(jar_path)
+
+        is_suspicious_dates = (
+            "Подозрительно" in result_dates
+            or "⚠️" in result_dates
+        )
+
+        if is_suspicious_dates:
             all_clean = False
-            suspicious_clients.append((jar_path, result))
-            print(result)
+
+            print(result_dates)
+
+            suspicious_clients.append(
+                (jar_path, result_dates)
+            )
+
         else:
-            print(result)
+            print(result_dates)
 
         print("-" * 50)
 
     # Итоговый вывод
     print("\n" + "=" * 50)
+
     if all_clean:
         print("✅ Все клиенты чистые")
+
     else:
-        print(f"⚠️ Найдено подозрительных клиентов: {len(suspicious_clients)}")
+        print(
+            f"⚠️ Найдено подозрительных клиентов: "
+            f"{len(suspicious_clients)}"
+        )
+
     print("=" * 50)
 
-    input("\nНажмите Enter для возврата в главное меню...")
+    input(
+        "\nНажмите Enter для возврата "
+        "в главное меню..."
+    )
 
 
 def main():
     """Главная функция"""
+
     while True:
         # Очистка экрана
-        os.system('cls' if os.name == 'nt' else 'clear')
+        os.system(
+            'cls' if os.name == 'nt' else 'clear'
+        )
 
         choice = main_menu()
 
         if choice == '1':
-            os.system('cls' if os.name == 'nt' else 'clear')
+            os.system(
+                'cls' if os.name == 'nt' else 'clear'
+            )
+
             checker = MinecraftHashChecker()
             checker.run_check()
+
         elif choice == '2':
-            os.system('cls' if os.name == 'nt' else 'clear')
+            os.system(
+                'cls' if os.name == 'nt' else 'clear'
+            )
+
             run_labymod_checker()
+
         elif choice == '3':
             print("Выход из программы...")
             break
+
         else:
             print("Неверный выбор. Попробуйте снова.")
             time.sleep(1)
